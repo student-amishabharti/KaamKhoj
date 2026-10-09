@@ -1,3 +1,5 @@
+-- Demo data. Naam demo ke hain, phone number nakli hain.
+
 INSERT INTO areas (id, name, city, lat, lng) VALUES
   (1, 'Supela', 'Bhilai', 21.2045, 81.3540),
   (2, 'Sector 6', 'Bhilai', 21.2040, 81.3790),
@@ -27,37 +29,76 @@ INSERT INTO users (id, phone, name, role, area_id) VALUES
   (13, '9000000013', 'ABC Painting Services', 'business', 2),
   (14, '9000000014', 'Priya Sharma', 'customer', 1),
   (15, '9000000015', 'Sunita Verma', 'customer', 8),
-  (16, '9000000016', 'Rahul Gupta', 'customer', 3);
+  (16, '9000000016', 'Rahul Gupta', 'customer', 3),
+  (17, '9000000017', 'Sonu Kumar', 'worker', 7),
+  (18, '9000000018', 'Purane Grahak 1', 'customer', 2),
+  (19, '9000000019', 'Purane Grahak 2', 'customer', 9),
+  (20, '9000000020', 'Purane Grahak 3', 'customer', 4);
 SELECT setval('users_id_seq', (SELECT MAX(id) FROM users));
 
-INSERT INTO worker_profiles (user_id, skills, available) VALUES
-  (1, '{painter,mason}', true),
-  (2, '{electrician}', true),
-  (3, '{plumber}', false),
-  (4, '{carpenter}', true),
-  (5, '{cleaner}', true),
-  (6, '{electrician,plumber}', true),
-  (7, '{painter}', false),
-  (8, '{mason}', true),
-  (9, '{plumber}', true),
-  (10, '{cleaner}', false),
-  (11, '{carpenter}', false),
-  (12, '{electrician}', false);
+INSERT INTO worker_profiles (user_id, skills, available, work_note, is_learner) VALUES
+  (1, '{painter,mason}', true, 'Painting aur chinai ka kaam chahiye, Bhilai mein kahin bhi', false),
+  (2, '{electrician}', true, 'Wiring, pankha, switch board ka kaam', false),
+  (3, '{plumber}', false, NULL, false),
+  (4, '{carpenter}', true, 'Furniture aur darwaze ki marammat', false),
+  (5, '{cleaner}', true, 'Ghar aur office ki safai, subah ka time', false),
+  (6, '{electrician,plumber}', true, NULL, false),
+  (7, '{painter}', false, NULL, false),
+  (8, '{mason}', true, 'Chinai, plaster, tile', false),
+  (9, '{plumber}', true, 'Nal, tanki, bathroom fitting', false),
+  (10, '{cleaner}', false, NULL, false),
+  (11, '{carpenter}', false, NULL, false),
+  (12, '{electrician}', false, NULL, false),
+  (17, '{painter}', true, 'Painting seekh raha hoon, helper ban ke aa sakta hoon', true);
 
 INSERT INTO worker_profiles
-  (user_id, skills, available, business_name, team_size, working_hours, service_areas, starting_price)
+  (user_id, skills, available, work_note, business_name, team_size, working_hours, service_areas, starting_price)
 VALUES
-  (13, '{painter}', true, 'ABC Painting Services', 5, '10 AM - 6 PM', 'Durg, Bhilai', 1500);
+  (13, '{painter}', true, 'Poora ghar paint, team ke saath', 'ABC Painting Services', 5, '10 AM - 6 PM', 'Durg, Bhilai', 1500);
 
-INSERT INTO jobs (customer_id, worker_id, category, when_text, status, created_at)
-SELECT 14 + (g % 3), w.user_id, w.skills[1], 'pichhle dino', 'completed', now() - (g || ' days')::interval
+-- Purane poore hue kaam: har kaarigar ke 2 se 14. Dono INSERT ka order aur shart same hai,
+-- isliye ROW_NUMBER se kaam aur kaarigar ka jod sahi banta hai.
+INSERT INTO job_posts (id, customer_id, category, area_id, work_date, start_time, hours, status, created_at)
+SELECT ROW_NUMBER() OVER (ORDER BY w.user_id, g),
+       18 + (g % 3),
+       w.skills[1],
+       (SELECT area_id FROM users WHERE id = 18 + (g % 3)),
+       current_date - g * 3,
+       '10:00',
+       2 + (g % 3),
+       'completed',
+       now() - ((g * 3) || ' days')::interval
 FROM worker_profiles w, generate_series(1, 20) g
-WHERE g <= (w.user_id * 7) % 13 + 2
-ORDER BY w.user_id, g;
+WHERE w.user_id <> 17 AND g <= (w.user_id * 7) % 13 + 2;
 
+INSERT INTO job_applications (job_id, worker_id, status)
+SELECT ROW_NUMBER() OVER (ORDER BY w.user_id, g), w.user_id, 'selected'
+FROM worker_profiles w, generate_series(1, 20) g
+WHERE w.user_id <> 17 AND g <= (w.user_id * 7) % 13 + 2;
+
+SELECT setval('job_posts_id_seq', (SELECT MAX(id) FROM job_posts));
+
+-- Zyaadatar poore kaamon par review (har 4th par nahi)
 INSERT INTO reviews (job_id, worker_id, customer_id, stars, comment)
-SELECT j.id, j.worker_id, j.customer_id,
-       3 + ((j.id * 7 + j.worker_id) % 3),
+SELECT j.id, ja.worker_id, j.customer_id,
+       3 + ((j.id * 7 + ja.worker_id) % 3),
        (ARRAY['Achha kaam kiya', 'Time par aaye', 'Kaam saaf-suthra tha', 'Theek kaam tha'])[1 + (j.id % 4)]
-FROM jobs j
+FROM job_posts j
+JOIN job_applications ja ON ja.job_id = j.id AND ja.status = 'selected'
 WHERE j.status = 'completed' AND j.id % 4 <> 0;
+
+-- Priya ka ek poora hua kaam (Ramesh ne kiya), rating abhi baaki: demo mein star dena dikhane ke liye
+INSERT INTO job_posts (customer_id, category, area_id, work_date, start_time, hours, note, status)
+VALUES (14, 'mason', 1, current_date - 2, '10:00', 4, 'Deewar ki marammat', 'completed');
+INSERT INTO job_applications (job_id, worker_id, status)
+SELECT MAX(id), 1, 'selected' FROM job_posts;
+
+-- Demo ke liye kuch khule kaam
+INSERT INTO job_posts (customer_id, category, area_id, work_date, start_time, hours, note, status) VALUES
+  (15, 'plumber', 8, current_date + 1, '10:00', 2, 'Bathroom ka nal tapak raha hai', 'open'),
+  (16, 'electrician', 3, current_date, '17:00', 1, 'Pankha nahi chal raha', 'open'),
+  (14, 'painter', 1, current_date + 5, '09:00', 8, 'Do kamre paint karne hain', 'open');
+
+-- Priya ke painting wale kaam par Anil ne pehle se haan kaha hai
+INSERT INTO job_applications (job_id, worker_id, status)
+SELECT id, 7, 'applied' FROM job_posts WHERE status = 'open' AND category = 'painter';

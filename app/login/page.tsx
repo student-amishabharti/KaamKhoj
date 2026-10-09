@@ -62,7 +62,7 @@ export default function LoginPage() {
       phone, code, name, role, areaId: Number(areaId),
     });
     if (!data) return;
-    router.push(data.role === "customer" ? "/search" : "/");
+    router.push( "/");
     router.refresh();
   }
 

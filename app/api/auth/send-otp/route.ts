@@ -10,9 +10,10 @@ export async function POST(req: Request) {
 
   const code = String(Math.floor(1000 + Math.random() * 9000));
   await pool.query(
-    `INSERT INTO otp_codes (phone, code, expires_at)
-     VALUES ($1, $2, now() + interval '5 minutes')
-     ON CONFLICT (phone) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at`,
+    `INSERT INTO otp_codes (phone, code, expires_at, attempts)
+     VALUES ($1, $2, now() + interval '5 minutes', 0)
+     ON CONFLICT (phone) DO UPDATE
+       SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at, attempts = 0`,
     [phone, code]
   );
 

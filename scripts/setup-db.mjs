@@ -11,7 +11,8 @@ try {
   const { rows } = await client.query(`
     SELECT (SELECT COUNT(*) FROM areas) AS areas,
            (SELECT COUNT(*) FROM users) AS users,
-           (SELECT COUNT(*) FROM jobs) AS jobs,
+           (SELECT COUNT(*) FROM job_posts) AS kaam,
+           (SELECT COUNT(*) FROM job_posts WHERE status = 'open') AS khule_kaam,
            (SELECT COUNT(*) FROM reviews) AS reviews
   `);
   console.log("✅ Database taiyaar:", rows[0]);
