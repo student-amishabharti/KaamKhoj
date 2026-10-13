@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import Logo from "@/components/Logo";
 import Icon from "@/components/Icon";
+import { forgetMe } from "@/lib/client";
 
 type Area = { id: number; name: string; city: string };
 type Errors = { phone?: string; otp?: string; name?: string; area?: string; form?: string };
@@ -93,7 +94,10 @@ export default function LoginPage() {
     });
     setBusy(false);
     if (!ok) return setErrors({ [data.field ?? "form"]: data.error });
-    router.push("/");
+    // Kisi page se login par aaye the (jaise ek kaam ki details) to wahin wapas. Sirf apni site ke andar.
+    forgetMe(); // "login nahi" wala purana jawab bhool jao
+    const next = new URLSearchParams(window.location.search).get("next") ?? "/";
+    router.push(next.startsWith("/") && !next.startsWith("//") ? next : "/");
     router.refresh();
   }
 

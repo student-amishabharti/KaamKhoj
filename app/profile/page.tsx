@@ -4,7 +4,12 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import TopBar from "@/components/TopBar";
 import Icon, { type IconName } from "@/components/Icon";
-import { logout, useMe, type Me } from "@/lib/client";
+import Toggle from "@/components/Toggle";
+import { forgetMe, logout, useMe, type Me } from "@/lib/client";
+import { catInfo } from "@/lib/format";
+
+type Area = { id: number; name: string; city: string };
+type WorkerInfo = { skills: string[]; available: boolean };
 
 function Row({ href, icon, title, sub }: { href: string; icon: IconName; title: string; sub: string }) {
   return (
@@ -29,11 +34,39 @@ export default function ProfilePage() {
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
   const [busy, setBusy] = useState(false);
+  const [areas, setAreas] = useState<Area[]>([]);
+  const [worker, setWorker] = useState<WorkerInfo | null>(null);
 
   useEffect(() => {
     setMe(loaded);
     if (loaded) setName(loaded.name);
   }, [loaded]);
+
+  useEffect(() => {
+    if (!loaded) return;
+    fetch("/api/areas").then((r) => r.json()).then((d) => setAreas(d.areas ?? [])).catch(() => {});
+    fetch("/api/worker/profile").then((r) => r.json())
+      .then((d) => d.profile && setWorker({ skills: d.profile.skills ?? [], available: d.profile.available }))
+      .catch(() => {});
+  }, [loaded]);
+
+  async function patch(url: string, body: object, ok: string) {
+    setBusy(true);
+    setError("");
+    setSaved("");
+    try {
+      const res = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
+      if (d.user) { setMe(d.user); forgetMe(d.user); }
+      if (d.profile) setWorker({ skills: d.profile.skills ?? [], available: d.profile.available });
+      setSaved(ok);
+    } catch (err) {
+      setError((err as Error).message || "Internet check karo, fir koshish karo");
+    } finally {
+      setBusy(false);
+    }
+  }
 
   async function saveName() {
     setBusy(true);
@@ -48,6 +81,7 @@ export default function ProfilePage() {
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       setMe(d.user);
+      forgetMe(d.user);
       setEditing(false);
       setSaved("Naam save ho gaya");
     } catch (err) {
@@ -67,10 +101,9 @@ export default function ProfilePage() {
     );
   }
 
-  const working = me.role !== "customer";
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-4 bg-bg p-4 pb-16 text-fg">
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-4 bg-bg p-4 pb-28 text-fg">
       <TopBar title="Meri profile" />
 
       {/* Meri jaankari */}
@@ -98,9 +131,16 @@ export default function ProfilePage() {
             <>
               <p className="truncate text-2xl font-extrabold">{me.name || "Naam nahi diya"}</p>
               <p className="text-fg-2">+91 {me.phone}</p>
-              <p className="flex items-center gap-1 text-muted">
-                <Icon name="pin" className="h-4 w-4" /> {me.area_name ?? "Area nahi chuna"}
-              </p>
+              <label className="mt-1 flex items-center gap-2 text-muted">
+                <Icon name="pin" className="h-4 w-4" />
+                <span className="sr-only">Mera area</span>
+                <select value={me.area_id ?? ""} disabled={busy}
+                  onChange={(e) => patch("/api/me", { areaId: Number(e.target.value) }, "Area badal gaya")}
+                  className="rounded-lg border border-line bg-bg px-2 py-1 text-sm text-fg">
+                  {!me.area_id && <option value="">Area chuno</option>}
+                  {areas.map((a) => <option key={a.id} value={a.id}>{a.name}, {a.city}</option>)}
+                </select>
+              </label>
               <button onClick={() => { setEditing(true); setSaved(""); }} className="mt-1 text-sm font-semibold text-brand hover:underline">
                 Naam badlo
               </button>
@@ -112,23 +152,26 @@ export default function ProfilePage() {
       {saved && <p role="status" className="rounded-xl bg-ok/15 p-3 text-green-300">{saved}</p>}
       {error && <p role="alert" className="rounded-xl bg-danger/15 p-3 text-red-300">{error}</p>}
 
-      <p className="rounded-xl border border-line bg-surface p-3 text-sm text-muted">
-        Abhi aap <b className="text-fg">{working ? "Kaam chahiye" : "Kaam karwana hai"}</b> mode mein ho. Badalne ke liye Home par upar ka switch dabao.
-      </p>
+      {/* Kaarigar wala hissa: har account mein (ek account dono kaam kar sakta hai) */}
+      <section className="flex flex-col gap-3 rounded-2xl border border-line bg-surface p-4">
+        <h2 className="text-lg font-extrabold">Kaarigar ke roop mein</h2>
+        {worker ? (
+          <>
+            <Toggle label={worker.available ? "Main Available hoon" : "Abhi Available nahi"}
+              sub="ON ho to malik aapko dhoondh kar bula sakte hain"
+              checked={worker.available} disabled={busy}
+              onChange={(v) => patch("/api/worker/profile", { available: v }, v ? "Ab aap Available ho" : "Available band")} />
+            <p className="text-sm text-fg-2">
+              Mere kaam: {worker.skills.length ? worker.skills.map((k) => catInfo(k).label).join(", ") : <span className="text-muted">abhi nahi chune</span>}
+            </p>
+          </>
+        ) : <p className="text-sm text-muted">Load ho raha hai...</p>}
+        <Row href="/worker" icon="users" title="Kaam ki settings" sub="Skills, helper, kaam chahiye sandesh, reviews" />
+      </section>
 
-      {/* Mera kaam */}
-      {working ? (
-        <>
-          <Row href="/worker" icon="users" title="Kaam ki settings" sub="Available, skills, helper, reviews" />
-          <Row href="/jobs" icon="check" title="Mere kaam" sub="Jo kaam aapne liye" />
-          <Row href="/open" icon="briefcase" title="Naye kaam" sub="Aapke area ke kaam" />
-        </>
-      ) : (
-        <>
-          <Row href="/jobs" icon="briefcase" title="Meri bookings" sub="Post kiye kaam aur aane wale kaarigar" />
-          <Row href="/post" icon="users" title="Naya kaam post karo" sub="Kya kaam, kab, kitne ghante" />
-        </>
-      )}
+      <Row href="/jobs" icon="briefcase" title="Mera kaam" sub="Meri bookings aur jin kaamon par maine haan kaha" />
+      <Row href="/activity" icon="mic" title="AI activity" sub="Aapne kya bola, AI ne kya kiya" />
+      <Row href="/eval" icon="check" title="AI evaluation" sub="AI kitna sahi hai: test aur number" />
 
       <p className="flex items-start gap-2 px-1 text-sm text-muted">
         <Icon name="shield" className="mt-0.5 h-5 w-5 shrink-0 text-ok" />

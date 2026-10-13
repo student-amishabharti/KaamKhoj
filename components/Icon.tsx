@@ -1,7 +1,8 @@
 // KaamKhoj ke apne icons (SVG). Emoji ki jagah ye har phone par ek jaise dikhte hain.
 type Name =
   | "electrician" | "plumber" | "painter" | "carpenter" | "mason" | "cleaner"
-  | "mic" | "shield" | "star" | "phone" | "pin" | "check" | "sos" | "users" | "briefcase" | "arrow";
+  | "mic" | "shield" | "star" | "phone" | "pin" | "check" | "sos" | "users" | "briefcase" | "arrow"
+  | "home" | "search" | "user" | "calendar" | "clock" | "back" | "filter";
 
 export const ICON_PATHS: Record<Name, React.ReactNode> = {
   electrician: <path d="M13 2 4.5 13.5H11L10 22l8.5-11.5H12L13 2Z" />,
@@ -83,6 +84,38 @@ export const ICON_PATHS: Record<Name, React.ReactNode> = {
     </>
   ),
   arrow: <path d="M5 12h14M13 6l6 6-6 6" />,
+  home: (
+    <>
+      <path d="m3 11 9-7 9 7" />
+      <path d="M5 9.5V20h5v-6h4v6h5V9.5" />
+    </>
+  ),
+  search: (
+    <>
+      <circle cx="11" cy="11" r="6.5" />
+      <path d="m16 16 4.5 4.5" />
+    </>
+  ),
+  user: (
+    <>
+      <circle cx="12" cy="8" r="4" />
+      <path d="M4 21a8 8 0 0 1 16 0" />
+    </>
+  ),
+  calendar: (
+    <>
+      <rect x="3.5" y="5" width="17" height="15.5" rx="2" />
+      <path d="M3.5 10h17M8 3v4M16 3v4" />
+    </>
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
+  back: <path d="M19 12H5M11 6l-6 6 6 6" />,
+  filter: <path d="M4 5h16l-6 7.5V19l-4 2v-8.5Z" />,
 };
 
 export default function Icon({ name, className = "h-6 w-6" }: { name: Name; className?: string }) {

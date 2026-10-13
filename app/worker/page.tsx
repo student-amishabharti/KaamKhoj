@@ -27,13 +27,17 @@ export default function WorkerPage() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (me && me.role !== "customer") {
+    if (!me) return;
+    const load = () =>
       fetch("/api/worker/profile").then((r) => r.json()).then((p) => {
         setProfile(p.profile);
         setNote(p.profile?.work_note ?? "");
         if (!p.profile?.skills?.length) setEditSkills(true);
-      });
-    }
+      }).catch(() => {});
+    load();
+    // Voice se skills/available badle to page taaza ho jaaye
+    window.addEventListener("kk:data-changed", load);
+    return () => window.removeEventListener("kk:data-changed", load);
   }, [me]);
 
   // Har badlaav server par save hota hai; screen tabhi badalti hai jab save sach mein ho jaaye
@@ -66,18 +70,18 @@ export default function WorkerPage() {
   }
 
   if (me === undefined) return <p className="p-6 text-center text-xl text-fg">Load ho raha hai...</p>;
-  if (!me || me.role === "customer") {
+  if (!me) {
     return (
       <main className="mx-auto flex min-h-screen max-w-md flex-col items-center justify-center gap-4 bg-bg p-6 text-center text-fg">
-        <p className="text-xl">Ye screen kaam karne walon ke liye hai. Home par &quot;Kaam chahiye&quot; chuno.</p>
-        <Link href="/" className="rounded-xl bg-brand px-8 py-4 text-xl font-bold text-bg">Home</Link>
+        <p className="text-xl">Pehle login karo</p>
+        <Link href="/login?next=/worker" className="rounded-xl bg-brand px-8 py-4 text-xl font-bold text-bg">Login</Link>
       </main>
     );
   }
   if (!profile) return <p className="p-6 text-center text-xl text-fg">Profile load ho rahi hai...</p>;
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-4 bg-bg p-4 pb-16 text-fg">
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-4 bg-bg p-4 pb-28 text-fg">
       <TopBar title="Kaam ki settings" />
 
       <Toggle

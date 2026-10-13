@@ -8,7 +8,7 @@ import Icon, { type IconName } from "@/components/Icon";
 import ProfileButton from "@/components/ProfileButton";
 import Toggle from "@/components/Toggle";
 import { CATEGORIES } from "@/lib/categories";
-import { useMe, type Me } from "@/lib/client";
+import { forgetMe, useMe, type Me } from "@/lib/client";
 
 /* ---------------- Login se pehle: pehla page ---------------- */
 
@@ -153,17 +153,47 @@ function Landing() {
 
 /* ---------------- Login ke baad: Home ---------------- */
 
-function Tile({ href, icon, title, sub }: { href: string; icon: IconName; title: string; sub: string }) {
+type Summary = { responses: number; open: number; booked: number; sent: number; selected: number; invited: number };
+
+// Asli data se chhota haal-chaal (kuch bhi banaya hua nahi)
+function useSummary() {
+  const [s, setS] = useState<Summary | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const [c, w] = await Promise.all([
+          fetch("/api/jobs?as=customer").then((r) => r.json()),
+          fetch("/api/jobs?as=worker").then((r) => r.json()),
+        ]);
+        type P = { status: string; applicants: { status: string }[] };
+        type J = { job_status: string; my_status: string };
+        const posts: P[] = c.posts ?? [];
+        const jobs: J[] = w.jobs ?? [];
+        const live = (x: string) => x === "open" || x === "assigned";
+        if (!alive) return;
+        setS({
+          responses: posts.filter((p) => p.status === "open" && p.applicants.some((a) => a.status === "applied")).length,
+          open: posts.filter((p) => p.status === "open").length,
+          booked: posts.filter((p) => p.status === "assigned").length,
+          sent: jobs.filter((j) => live(j.job_status) && j.my_status === "applied").length,
+          invited: jobs.filter((j) => live(j.job_status) && j.my_status === "invited").length,
+          selected: jobs.filter((j) => j.job_status === "assigned" && j.my_status === "selected").length,
+        });
+      } catch { /* haal-chaal na mile to bhi Home chale */ }
+    };
+    load();
+    window.addEventListener("kk:data-changed", load);
+    return () => { alive = false; window.removeEventListener("kk:data-changed", load); };
+  }, []);
+  return s;
+}
+
+function Stat({ href, n, label, tone }: { href: string; n: number; label: string; tone: string }) {
   return (
-    <Link href={href} className="group flex items-center gap-4 rounded-2xl border border-line bg-surface p-4 transition hover:border-brand md:flex-col md:items-start md:p-5">
-      <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-brand-soft text-brand">
-        <Icon name={icon} className="h-7 w-7" />
-      </span>
-      <span className="flex-1">
-        <span className="block text-xl font-bold">{title}</span>
-        <span className="block text-sm text-muted">{sub}</span>
-      </span>
-      <Icon name="arrow" className="h-5 w-5 text-muted transition group-hover:translate-x-1 md:hidden" />
+    <Link href={href} className="flex items-center gap-3 rounded-2xl border border-line bg-surface p-3 transition hover:border-brand">
+      <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl text-lg font-extrabold ${tone}`}>{n}</span>
+      <span className="text-sm font-semibold text-fg-2">{label}</span>
     </Link>
   );
 }
@@ -173,40 +203,39 @@ function Dashboard({ me }: { me: NonNullable<Me> }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [available, setAvailable] = useState<boolean | null>(null);
-  const hiring = user.role === "customer";
+  const summary = useSummary();
+  const business = user.role === "business";
 
-  // Kaam chahiye mode mein: available hai ya nahi, server se
+  // Voice assistant ne mode badla to yahan bhi
   useEffect(() => {
-    if (hiring) return;
-    fetch("/api/worker/profile").then((r) => r.json()).then((d) => setAvailable(d.profile?.available ?? null)).catch(() => {});
-  }, [hiring]);
+    const on = (e: Event) => { const u = (e as CustomEvent).detail; if (u) setUser((p) => ({ ...p, ...u })); };
+    window.addEventListener("kk:mode-changed", on);
+    return () => window.removeEventListener("kk:mode-changed", on);
+  }, []);
 
-  async function patch(url: string, body: object) {
-    const res = await fetch(url, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    const d = await res.json();
-    if (!res.ok) throw new Error(d.error);
-    return d;
-  }
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/worker/profile").then((r) => r.json()).then((d) => setAvailable(d.profile?.available ?? null)).catch(() => {});
+    load();
+    window.addEventListener("kk:data-changed", load);
+    return () => window.removeEventListener("kk:data-changed", load);
+  }, []);
 
-  async function switchMode(mode: "hire" | "work") {
-    if ((mode === "hire") === hiring || busy) return;
-    setBusy(true);
-    setError("");
-    try {
-      const d = await patch("/api/me", { mode });
-      setUser(d.user);
-    } catch (err) {
-      setError((err as Error).message || "Internet check karo, fir koshish karo");
-    } finally {
-      setBusy(false);
-    }
+  // Aakhri iraada yaad rakho (AI assistant isi se samajhta hai "kaam chahiye" ka matlab). Rok-tok nahi hai.
+  function remember(mode: "hire" | "work") {
+    if (business) return;
+    if ((mode === "hire") === (user.role === "customer")) return;
+    fetch("/api/me", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode }) })
+      .then((r) => r.json()).then((d) => { if (d.user) { setUser(d.user); forgetMe(d.user); } }).catch(() => {});
   }
 
   async function setAvail(v: boolean) {
     setBusy(true);
     setError("");
     try {
-      const d = await patch("/api/worker/profile", { available: v });
+      const res = await fetch("/api/worker/profile", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ available: v }) });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.error);
       setAvailable(d.profile.available);
     } catch (err) {
       setError((err as Error).message || "Save nahi hua. Internet check karo");
@@ -215,62 +244,79 @@ function Dashboard({ me }: { me: NonNullable<Me> }) {
     }
   }
 
-  const seg = (on: boolean) =>
-    `flex-1 rounded-xl px-3 py-3 text-base font-bold transition ${on ? "bg-brand text-bg" : "text-fg-2 hover:text-fg"}`;
+  const big = "flex items-center justify-center gap-2 rounded-xl px-4 py-3.5 text-base font-extrabold transition";
+  const stats = summary
+    ? [
+        summary.responses > 0 && <Stat key="r" href="/jobs?view=customer" n={summary.responses} label="Kaam par kaarigaron ne haan kaha" tone="bg-brand-soft text-brand" />,
+        summary.booked > 0 && <Stat key="b" href="/jobs?view=customer" n={summary.booked} label="Pakki booking" tone="bg-ok/15 text-green-300" />,
+        summary.open - summary.responses > 0 && <Stat key="o" href="/jobs?view=customer" n={summary.open - summary.responses} label="Kaam jawab ke intezaar mein" tone="bg-surface-2 text-fg" />,
+        summary.invited > 0 && <Stat key="i" href="/jobs?view=worker" n={summary.invited} label="Malik ne aapko bulaya" tone="bg-brand-soft text-brand" />,
+        summary.selected > 0 && <Stat key="s" href="/jobs?view=worker" n={summary.selected} label="Aap chune gaye" tone="bg-ok/15 text-green-300" />,
+        summary.sent > 0 && <Stat key="t" href="/jobs?view=worker" n={summary.sent} label="Request bheji, jawab ka intezaar" tone="bg-surface-2 text-fg" />,
+      ].filter(Boolean)
+    : [];
 
   return (
     <div className="min-h-screen bg-bg text-fg">
       <header className="mx-auto flex max-w-4xl items-center justify-between px-4 py-4 sm:px-6">
-        <Logo size="sm" />
+        <span className="md:invisible"><Logo size="sm" /></span>
         <ProfileButton name={user.name} />
       </header>
 
-      <main className="mx-auto flex max-w-4xl flex-col gap-4 px-4 pb-16 sm:px-6">
+      <main className="mx-auto flex max-w-4xl flex-col gap-5 px-4 pb-28 sm:px-6">
         <div>
-          <p className="text-2xl font-extrabold sm:text-3xl">{user.name.trim() ? `Namaste, ${user.name}` : "Namaste"}</p>
-          <p className="flex items-center gap-1 text-muted">
-            <Icon name="pin" className="h-4 w-4" /> {user.area_name ?? "Area nahi chuna"}
-          </p>
+          <p className="text-muted">{user.name.trim() ? `Namaste, ${user.name}` : "Namaste"} · <Icon name="pin" className="inline h-4 w-4" /> {user.area_name ?? "Area nahi chuna"}</p>
+          <h1 className="mt-1 text-3xl font-extrabold sm:text-4xl">Aaj kya karna hai?</h1>
         </div>
 
-        {user.role !== "business" && (
-          <div className="flex max-w-md gap-1 rounded-2xl border border-line bg-surface p-1" role="group" aria-label="Aap abhi kya karna chahte ho">
-            <button disabled={busy} aria-pressed={hiring} className={seg(hiring)} onClick={() => switchMode("hire")}>
-              Kaam karwana hai
-            </button>
-            <button disabled={busy} aria-pressed={!hiring} className={seg(!hiring)} onClick={() => switchMode("work")}>
-              Kaam chahiye
-            </button>
-          </div>
-        )}
+        <div className="grid gap-3 md:grid-cols-2">
+          {!business && (
+            <section className="flex flex-col gap-3 rounded-3xl border border-line bg-surface p-5">
+              <div className="flex items-center gap-3">
+                <span className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-soft text-brand"><Icon name="users" className="h-7 w-7" /></span>
+                <div>
+                  <h2 className="text-xl font-extrabold">Mujhe kaarigar chahiye</h2>
+                  <p className="text-sm text-muted">Bijli, nal, paint, badhai, chinai, safai</p>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <Link href="/post" onClick={() => remember("hire")} className={`${big} bg-brand text-bg hover:brightness-110`}>Kaam post karo</Link>
+                <Link href="/explore?tab=workers" onClick={() => remember("hire")} className={`${big} border border-line hover:border-brand`}>Kaarigar dekho</Link>
+              </div>
+            </section>
+          )}
+
+          <section className="flex flex-col gap-3 rounded-3xl border border-line bg-surface p-5">
+            <div className="flex items-center gap-3">
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-brand-soft text-brand"><Icon name="briefcase" className="h-7 w-7" /></span>
+              <div>
+                <h2 className="text-xl font-extrabold">Mujhe kaam chahiye</h2>
+                <p className="text-sm text-muted">Paas ke kaam dekho, &quot;Main aaunga&quot; bolo</p>
+              </div>
+            </div>
+            <Link href="/explore?tab=jobs" onClick={() => remember("work")} className={`${big} bg-brand text-bg hover:brightness-110`}>Kaam dekho</Link>
+            {available !== null && (
+              <Toggle label={available ? "Main Available hoon" : "Abhi Available nahi"}
+                sub={available ? "Malik aapko dhoondh kar bula sakte hain" : "ON karo taaki malik aapko dekh sakein"}
+                checked={available} disabled={busy} onChange={setAvail} />
+            )}
+          </section>
+        </div>
         {error && <p role="alert" className="rounded-xl bg-danger/15 p-3 text-sm text-red-300">{error}</p>}
 
-        {!hiring && available !== null && (
-          <div className="max-w-md">
-            <Toggle
-              label="Main aaj available hoon"
-              sub={available ? "Malik aapko Available dekhenge" : "ON karo, taaki malik aapko dekh sakein"}
-              checked={available}
-              disabled={busy}
-              onChange={setAvail}
-            />
-          </div>
+        {stats.length > 0 && (
+          <section>
+            <h2 className="mb-2 text-sm font-bold uppercase tracking-wide text-muted">Aapka haal</h2>
+            <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">{stats}</div>
+          </section>
         )}
 
-        <div className="grid gap-3 md:grid-cols-3">
-          {hiring ? (
-            <>
-              <Tile href="/post" icon="users" title="Kaam post karo" sub="Kaunsa kaam, kab, kitne ghante" />
-              <Tile href="/jobs" icon="briefcase" title="Meri bookings" sub="Kaun aa raha hai, aage kya karna hai" />
-              <Tile href="/search" icon="star" title="Kaarigar dekho" sub="Rating dekh ke seedha bulao" />
-            </>
-          ) : (
-            <>
-              <Tile href="/open" icon="briefcase" title="Naye kaam" sub="Aapke area ke kaam" />
-              <Tile href="/jobs" icon="check" title="Mere kaam" sub="Jo kaam aapne liye" />
-              <Tile href="/worker" icon="users" title="Kaam ki settings" sub="Skills, helper, reviews" />
-            </>
-          )}
+        <div className="flex items-start gap-3 rounded-2xl border border-line bg-surface p-4">
+          <Icon name="mic" className="mt-0.5 h-6 w-6 shrink-0 text-brand" />
+          <p className="text-fg-2">
+            <b className="text-fg">Mic</b> dabakar bolo (phone par neeche beech mein, computer par baayein menu mein), jaise &quot;kal subah 10 baje plumber chahiye&quot; ya &quot;naye kaam dikhao&quot;.
+            AI form bharega ya page kholega; aakhri button aap dabaoge.
+          </p>
         </div>
       </main>
     </div>

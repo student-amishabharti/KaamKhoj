@@ -12,7 +12,9 @@ function adjustedRating(avg: number, count: number) {
 }
 
 export async function searchWorkers(opts: {
-  category: CategoryId;
+  category?: CategoryId | null;  // na diya ho to sab kaam ke (naam se dhoondhne ke liye)
+  q?: string;                    // naam ya business ka naam
+  onlyAvailable?: boolean;
   areaId: number;
   viewerId?: number;
   limit?: number;
@@ -33,13 +35,16 @@ export async function searchWorkers(opts: {
      JOIN areas a ON a.id = u.area_id
      JOIN worker_stats s ON s.user_id = w.user_id
      CROSS JOIN me
-     WHERE $1 = ANY(w.skills)
+     WHERE ($1::text IS NULL OR $1 = ANY(w.skills))
+       AND cardinality(w.skills) > 0
+       AND ($4::text IS NULL OR u.name ILIKE '%' || $4 || '%' OR COALESCE(w.business_name, '') ILIKE '%' || $4 || '%')
+       AND (NOT $5::boolean OR w.available)
        AND ($3::int IS NULL OR u.id <> $3)
        AND ($3::int IS NULL OR NOT EXISTS (
          SELECT 1 FROM blocks b
          WHERE (b.blocker_id = $3 AND b.blocked_id = u.id)
             OR (b.blocker_id = u.id AND b.blocked_id = $3)))`,
-    [opts.category, opts.areaId, opts.viewerId ?? null]
+    [opts.category ?? null, opts.areaId, opts.viewerId ?? null, opts.q?.trim().slice(0, 40) || null, opts.onlyAvailable ?? false]
   );
 
   const ranked = rows.map((r) => {

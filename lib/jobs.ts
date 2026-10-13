@@ -16,6 +16,7 @@ export type JobInput = {
   hours: number;
   note?: string;
   inviteWorkerId?: number;
+  areaId?: number; // kaam kis area mein (na diya to malik ka apna area)
 };
 
 // Kaam ki details sahi hain ya nahi. AI agent bhi isi se check karega.
@@ -31,7 +32,12 @@ export function checkJobInput(i: Partial<JobInput>): string | null {
 export async function createJob(me: CurrentUser, i: JobInput): Promise<{ id: number; duplicate: boolean }> {
   const err = checkJobInput(i);
   if (err) throw new Error(err);
-  if (!me.area_id) throw new Error("Pehle apna area chuno");
+  const areaId = i.areaId ?? me.area_id;
+  if (!areaId) throw new Error("Pehle area chuno");
+  if (i.areaId) {
+    const ok = await pool.query("SELECT 1 FROM areas WHERE id = $1", [i.areaId]);
+    if (ok.rowCount === 0) throw new Error("Ye area nahi mila");
+  }
 
   // Din aur time dono India ke samay se check (server UTC mein chalta hai)
   const past = await pool.query(
@@ -56,10 +62,10 @@ export async function createJob(me: CurrentUser, i: JobInput): Promise<{ id: num
   const same = await pool.query(
     `SELECT id FROM job_posts
      WHERE customer_id = $1 AND category = $2 AND work_date = $3 AND start_time = $4 AND hours = $5
-       AND COALESCE(note, '') = COALESCE($6, '') AND status IN ('open', 'assigned')
+       AND COALESCE(note, '') = COALESCE($6, '') AND area_id = $7 AND status IN ('open', 'assigned')
        AND created_at > now() - interval '2 minutes'
      ORDER BY id DESC LIMIT 1`,
-    [me.id, i.category, i.workDate, i.startTime, Number(i.hours), note]
+    [me.id, i.category, i.workDate, i.startTime, Number(i.hours), note, areaId]
   );
 
   let jobId: number;
@@ -71,7 +77,7 @@ export async function createJob(me: CurrentUser, i: JobInput): Promise<{ id: num
     const { rows } = await pool.query(
       `INSERT INTO job_posts (customer_id, category, area_id, work_date, start_time, hours, note)
        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-      [me.id, i.category, me.area_id, i.workDate, i.startTime, Number(i.hours), note]
+      [me.id, i.category, areaId, i.workDate, i.startTime, Number(i.hours), note]
     );
     jobId = rows[0].id;
   }
@@ -89,7 +95,7 @@ export async function createJob(me: CurrentUser, i: JobInput): Promise<{ id: num
 export async function listOpenJobs(workerId: number) {
   const { rows } = await pool.query(
     `SELECT j.id, j.category, to_char(j.work_date, 'YYYY-MM-DD') AS work_date, j.start_time, j.hours, j.note,
-            a.name AS area, a.city, u.name AS customer_name,
+            a.name AS area, a.city, split_part(u.name, ' ', 1) AS customer_name,
             ${dist("a", "ma")} AS distance_km,
             ja.status AS my_status,
             (SELECT COUNT(*)::int FROM job_applications x
@@ -114,12 +120,52 @@ export async function listOpenJobs(workerId: number) {
   return rows;
 }
 
+// Ek kaam ki poori jaankari, kaarigar ke dekhne ke liye (Job Details page).
+// Sirf tab dikhta hai jab kaam khula ho aur kaarigar ki skill ka ho, ya kaarigar pehle se is kaam se juda ho.
+// Malik ka number sirf tab, jab is kaarigar ko chuna gaya ho aur kaam tay ho.
+export async function getJobForWorker(me: CurrentUser, jobId: number) {
+  const { rows } = await pool.query(
+    `SELECT j.id, j.category, to_char(j.work_date, 'YYYY-MM-DD') AS work_date, j.start_time, j.hours, j.note,
+            j.status, j.customer_id, a.name AS area, a.city,
+            split_part(u.name, ' ', 1) AS customer_name,
+            ${dist("a", "ma")} AS distance_km,
+            ja.status AS my_status,
+            CASE WHEN ja.status = 'selected' AND j.status IN ('assigned', 'completed') THEN u.phone END AS customer_phone,
+            (SELECT COUNT(*)::int FROM job_applications x
+              WHERE x.job_id = j.id AND x.status IN ('applied', 'selected')) AS interested,
+            (SELECT COUNT(*)::int FROM job_posts p WHERE p.customer_id = j.customer_id) AS customer_posts,
+            (j.category = ANY(COALESCE(w.skills, '{}'))) AS my_skill
+     FROM job_posts j
+     JOIN areas a ON a.id = j.area_id
+     JOIN users u ON u.id = j.customer_id
+     JOIN users me ON me.id = $2
+     LEFT JOIN areas ma ON ma.id = me.area_id
+     LEFT JOIN worker_profiles w ON w.user_id = $2
+     LEFT JOIN job_applications ja ON ja.job_id = j.id AND ja.worker_id = $2
+     WHERE j.id = $1
+       AND NOT EXISTS (SELECT 1 FROM blocks b
+             WHERE (b.blocker_id = $2 AND b.blocked_id = j.customer_id)
+                OR (b.blocker_id = j.customer_id AND b.blocked_id = $2))`,
+    [jobId, me.id]
+  );
+  const j = rows[0];
+  if (!j) return null;
+  const mine = j.customer_id === me.id;
+  const linked = j.my_status !== null;
+  // Bina juday kaarigar ko sirf khula kaam, aur sirf apni skill ka
+  if (!mine && !linked && !(j.status === "open" && j.my_skill)) return null;
+  const { customer_id: _c, ...pub } = j;
+  void _c;
+  return { ...pub, mine };
+}
+
 // "Mere kaam": malik ko apne posts + aane wale kaarigar, kaarigar ko apne kaam
-export async function listMyJobs(me: CurrentUser) {
-  if (me.role === "customer") {
+export async function listMyJobs(me: CurrentUser, as?: "customer" | "worker") {
+  const view = as ?? (me.role === "customer" ? "customer" : "worker");
+  if (view === "customer") {
     const posts = await pool.query(
       `SELECT j.id, j.category, to_char(j.work_date, 'YYYY-MM-DD') AS work_date, j.start_time, j.hours,
-              j.note, j.status, a.name AS area
+              j.note, j.status, j.area_id, a.name AS area
        FROM job_posts j JOIN areas a ON a.id = j.area_id
        WHERE j.customer_id = $1
        ORDER BY (j.status IN ('open', 'assigned')) DESC, j.work_date DESC, j.id DESC
@@ -152,11 +198,22 @@ export async function listMyJobs(me: CurrentUser) {
       [me.id]
     );
 
+    // Jinhone haan kehkar baad mein mana / cancel kiya (sirf naam, number kabhi nahi)
+    const gone = await pool.query(
+      `SELECT ja.job_id, u.name
+       FROM job_applications ja
+       JOIN job_posts j ON j.id = ja.job_id
+       JOIN users u ON u.id = ja.worker_id
+       WHERE j.customer_id = $1 AND ja.status = 'withdrawn'`,
+      [me.id]
+    );
+
     return {
       role: "customer" as const,
       posts: posts.rows.map((p) => ({
         ...p,
         applicants: apps.rows.filter((x) => x.job_id === p.id),
+        withdrawn: gone.rows.filter((x) => x.job_id === p.id).map((x) => x.name as string),
       })),
     };
   }
@@ -164,7 +221,7 @@ export async function listMyJobs(me: CurrentUser) {
   const { rows } = await pool.query(
     `SELECT j.id, j.category, to_char(j.work_date, 'YYYY-MM-DD') AS work_date, j.start_time, j.hours, j.note,
             j.status AS job_status, ja.status AS my_status, a.name AS area, a.city,
-            u.id AS customer_id, u.name AS customer_name,
+            u.id AS customer_id, split_part(u.name, ' ', 1) AS customer_name,
             CASE WHEN ja.status = 'selected' AND j.status IN ('assigned', 'completed')
                  THEN u.phone END AS customer_phone,
             ${dist("a", "wa")} AS distance_km
@@ -207,8 +264,9 @@ export async function jobAction(me: CurrentUser, jobId: number, a: JobAction) {
   if (!job) throw new Error("Ye kaam nahi mila");
   const closed = job.status === "completed" || job.status === "cancelled";
 
-  // ----- Kaarigar ke kaam -----
-  if (me.role !== "customer") {
+  // ----- Kaarigar ke kaam (jiska kaam nahi hai wo kaarigar ki tarah) -----
+  // Ek hi account dono kar sakta hai: faisla "mode" se nahi, "kaam kiska hai" se hota hai.
+  if (job.customer_id !== me.id) {
     if (a.action === "apply") {
       if (job.customer_id === me.id) throw new Error("Apne hi kaam par haan nahi keh sakte");
       if (job.status !== "open") throw new Error("Ye kaam ab khula nahi hai");
@@ -222,7 +280,15 @@ export async function jobAction(me: CurrentUser, jobId: number, a: JobAction) {
         await pool.query("SELECT status FROM job_applications WHERE job_id = $1 AND worker_id = $2", [jobId, me.id])
       ).rows[0];
       if (prev?.status === "applied") throw new Error("Aap pehle hi haan keh chuke ho");
-      if (prev?.status === "selected" || prev?.status === "invited") throw new Error("Ye kaam 'Mere kaam' mein hai");
+      if (prev?.status === "selected") throw new Error("Aap is kaam ke liye chune ja chuke ho");
+      if (prev?.status === "invited") {
+        // Malik ne bulaya tha: "Main aaunga" = bulawa maan liya
+        await pool.query(
+          "UPDATE job_applications SET status = 'applied' WHERE job_id = $1 AND worker_id = $2 AND status = 'invited'",
+          [jobId, me.id]
+        );
+        return;
+      }
       if (prev?.status === "rejected") throw new Error("Malik ne is kaam ke liye kisi aur ko chuna");
 
       await pool.query(
@@ -234,15 +300,15 @@ export async function jobAction(me: CurrentUser, jobId: number, a: JobAction) {
       return;
     }
 
+    // Bulawa maan liya = "haan, aa sakta hoon". Ye booking nahi hai: aakhri chunaav malik hi karta hai.
     if (a.action === "accept_invite") {
-      if (closed) throw new Error("Ye kaam band ho chuka hai");
+      if (job.status !== "open") throw new Error("Ye kaam ab khula nahi hai");
       const r = await pool.query(
-        `UPDATE job_applications SET status = 'selected'
+        `UPDATE job_applications SET status = 'applied'
          WHERE job_id = $1 AND worker_id = $2 AND status = 'invited'`,
         [jobId, me.id]
       );
       if (r.rowCount === 0) throw new Error("Aapko is kaam ke liye bulaya nahi gaya");
-      await pool.query("UPDATE job_posts SET status = 'assigned' WHERE id = $1 AND status = 'open'", [jobId]);
       return;
     }
 
@@ -262,12 +328,36 @@ export async function jobAction(me: CurrentUser, jobId: number, a: JobAction) {
       return;
     }
 
+    if (["select", "unselect", "cancel", "complete", "review", "invite"].includes(a.action)) {
+      throw new Error("Ye aapka kaam nahi hai");
+    }
     throw new Error("Ye kaam kaarigar nahi kar sakta");
   }
 
-  // ----- Malik ke kaam -----
-  if (job.customer_id !== me.id) throw new Error("Ye aapka kaam nahi hai");
+  // ----- Malik ke kaam (sirf apne post kiye kaam par) -----
+  if (["apply", "accept_invite", "withdraw"].includes(a.action)) throw new Error("Apne hi kaam par ye nahi kar sakte");
   const workerId = Number(a.workerId);
+
+  // Post ke baad malik khud kisi paas ke kaarigar ko bulata hai
+  if (a.action === "invite") {
+    if (job.status !== "open") throw new Error("Bulana sirf khule kaam par");
+    if (workerId === me.id) throw new Error("Apne aap ko nahi bula sakte");
+    const ok = await pool.query(
+      `SELECT 1 FROM worker_profiles w WHERE w.user_id = $1 AND $2 = ANY(w.skills)
+         AND NOT EXISTS (SELECT 1 FROM blocks b
+           WHERE (b.blocker_id = $3 AND b.blocked_id = $1) OR (b.blocker_id = $1 AND b.blocked_id = $3))`,
+      [workerId, job.category, me.id]
+    );
+    if (ok.rowCount === 0) throw new Error("Ye kaarigar is kaam ka nahi hai");
+    const r = await pool.query(
+      `INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'invited')
+       ON CONFLICT (job_id, worker_id) DO UPDATE SET status = 'invited'
+       WHERE job_applications.status = 'withdrawn'`,
+      [jobId, workerId]
+    );
+    if (r.rowCount === 0) throw new Error("Ye kaarigar pehle se is kaam mein hai");
+    return;
+  }
 
   if (a.action === "select") {
     if (closed) throw new Error("Ye kaam band ho chuka hai");

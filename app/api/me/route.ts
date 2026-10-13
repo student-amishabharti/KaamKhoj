@@ -22,6 +22,14 @@ export async function PATCH(req: Request) {
     await pool.query("UPDATE users SET name = $2 WHERE id = $1", [me.id, name]);
   }
 
+  // { areaId } -> apna area badlo
+  if (body.areaId !== undefined) {
+    const areaId = Number(body.areaId);
+    const ok = Number.isInteger(areaId) ? await pool.query("SELECT 1 FROM areas WHERE id = $1", [areaId]) : null;
+    if (!ok || ok.rowCount === 0) return Response.json({ error: "Ye area nahi mila" }, { status: 400 });
+    await pool.query("UPDATE users SET area_id = $2 WHERE id = $1", [me.id, areaId]);
+  }
+
   if (body.mode !== undefined) {
     if (me.role === "business") {
       return Response.json({ error: "Business account sirf kaam karta hai" }, { status: 400 });

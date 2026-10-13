@@ -1,21 +1,24 @@
+import { pool } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
 import { getWorkerProfile, setAvailability, setLearner, setSkills, setWorkNote } from "@/lib/worker";
 
+// Har account kaarigar bhi ban sakta hai. Profile ki line na ho to bana do.
 async function requireWorker() {
   const me = await getCurrentUser();
-  if (!me || me.role === "customer") return null;
+  if (!me) return null;
+  await pool.query("INSERT INTO worker_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [me.id]);
   return me;
 }
 
 export async function GET() {
   const me = await requireWorker();
-  if (!me) return Response.json({ error: "Ye page sirf kaarigar ke liye hai" }, { status: 403 });
+  if (!me) return Response.json({ error: "Pehle login karo" }, { status: 403 });
   return Response.json({ profile: await getWorkerProfile(me.id) });
 }
 
 export async function PATCH(req: Request) {
   const me = await requireWorker();
-  if (!me) return Response.json({ error: "Ye page sirf kaarigar ke liye hai" }, { status: 403 });
+  if (!me) return Response.json({ error: "Pehle login karo" }, { status: 403 });
 
   const body = await req.json().catch(() => ({}));
   try {

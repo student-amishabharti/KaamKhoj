@@ -1,27 +1,31 @@
+import { pool } from "@/lib/db";
 import { getCurrentUser } from "@/lib/session";
 import { createJob, listMyJobs, listOpenJobs } from "@/lib/jobs";
 
-// GET /api/jobs            -> mere kaam
-// GET /api/jobs?scope=open -> kaarigar ke liye khule kaam
+// GET /api/jobs                  -> mere kaam (abhi ke mode ke hisaab se)
+// GET /api/jobs?as=customer      -> maine jo kaam post kiye (malik ki taraf)
+// GET /api/jobs?as=worker        -> jin kaamon par maine haan kaha / mujhe bulaya (kaarigar ki taraf)
+// GET /api/jobs?scope=open       -> meri skill ke khule kaam
 export async function GET(req: Request) {
   const me = await getCurrentUser();
   if (!me) return Response.json({ error: "Pehle login karo" }, { status: 401 });
 
-  const scope = new URL(req.url).searchParams.get("scope");
-  if (scope === "open") {
-    if (me.role === "customer") {
-      return Response.json({ error: "Khule kaam sirf kaarigar ke liye" }, { status: 403 });
-    }
+  const url = new URL(req.url);
+  if (url.searchParams.get("scope") === "open") {
+    // Ek hi account kaarigar bhi hai: profile na ho to bana do (skills khaali)
+    await pool.query("INSERT INTO worker_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING", [me.id]);
     return Response.json({ jobs: await listOpenJobs(me.id) });
   }
-  return Response.json(await listMyJobs(me));
+  const as = url.searchParams.get("as");
+  return Response.json(await listMyJobs(me, as === "customer" || as === "worker" ? as : undefined));
 }
 
 // POST /api/jobs -> malik naya kaam post karta hai
 export async function POST(req: Request) {
   const me = await getCurrentUser();
-  if (!me || me.role !== "customer") {
-    return Response.json({ error: "Kaam sirf malik post kar sakta hai" }, { status: 403 });
+  if (!me) return Response.json({ error: "Pehle login karo" }, { status: 401 });
+  if (me.role === "business") {
+    return Response.json({ error: "Business account se kaam post nahi hota" }, { status: 403 });
   }
   const body = await req.json().catch(() => ({}));
   try {
@@ -32,6 +36,7 @@ export async function POST(req: Request) {
       hours: Number(body.hours),
       note: typeof body.note === "string" ? body.note : "",
       inviteWorkerId: body.inviteWorkerId ? Number(body.inviteWorkerId) : undefined,
+      areaId: body.areaId ? Number(body.areaId) : undefined,
     });
     return Response.json({ ok: true, id, duplicate });
   } catch (err) {

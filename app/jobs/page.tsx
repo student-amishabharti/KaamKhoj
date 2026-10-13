@@ -14,7 +14,46 @@ type Applicant = {
 };
 type Post = {
   id: number; category: string; work_date: string; start_time: string; hours: number;
-  note: string | null; status: string; area: string; applicants: Applicant[];
+  note: string | null; status: string; area: string; area_id: number; applicants: Applicant[];
+  withdrawn: string[];
+};
+
+// Haalat ke hisaab se hisse (asli status se: open / assigned / completed / cancelled + har kaarigar ka jawab)
+type Tab = "booked" | "responses" | "open" | "invited" | "sent" | "done" | "closed";
+type View = "customer" | "worker";
+function postTab(p: Post): Tab {
+  if (p.status === "assigned") return "booked";
+  if (p.status === "completed") return "done";
+  if (p.status === "cancelled") return "closed";
+  return p.applicants.some((a) => a.status === "applied" || a.status === "invited") ? "responses" : "open";
+}
+function workerTab(j: WorkerJob): Tab {
+  const live = j.job_status === "open" || j.job_status === "assigned";
+  if (live && j.my_status === "selected") return "booked";
+  if (live && j.my_status === "invited") return "invited";
+  if (live && j.my_status === "applied") return "sent";
+  if (j.job_status === "completed" && j.my_status === "selected") return "done";
+  return "closed";
+}
+const TABS: Record<View, { id: Tab; label: string; empty: string }[]> = {
+  customer: [
+    { id: "booked", label: "Pakki booking", empty: "Abhi koi pakki booking nahi. Jab aap kisi kaarigar ko chunoge, wo yahan dikhega." },
+    { id: "responses", label: "Jawab aaye", empty: "Abhi kisi kaam par kaarigar ka jawab nahi aaya." },
+    { id: "open", label: "Khule", empty: "Koi khula kaam nahi. Naya kaam post karo." },
+    { id: "done", label: "Poore", empty: "Abhi koi kaam poora nahi hua." },
+    { id: "closed", label: "Cancel", empty: "Koi cancel kaam nahi." },
+  ],
+  worker: [
+    { id: "booked", label: "Chune gaye", empty: "Abhi aap kisi kaam ke liye chune nahi gaye. Malik chunega to yahan number ke saath dikhega." },
+    { id: "invited", label: "Bulaya gaya", empty: "Abhi kisi malik ne aapko seedha nahi bulaya." },
+    { id: "sent", label: "Request bheji", empty: "Aapne abhi kisi kaam par 'Main aaunga' nahi kaha." },
+    { id: "done", label: "Poore", empty: "Abhi koi kaam poora nahi hua." },
+    { id: "closed", label: "Band", empty: "Koi band kaam nahi." },
+  ],
+};
+type Nearby = {
+  id: number; name: string; available: boolean; is_learner: boolean; rating_avg: number;
+  review_count: number; jobs_completed: number; distance_km: number;
 };
 type WorkerJob = {
   id: number; category: string; work_date: string; start_time: string; hours: number; note: string | null;
@@ -46,34 +85,132 @@ function Phone({ phone, label }: { phone: string; label: string }) {
   );
 }
 
+// Post ke baad: is kaam ke paas wale kaarigar, "Isko bulao" ke saath
+function NearbyWorkers({ post, busy, startOpen, onInvite }: {
+  post: Post; busy: boolean; startOpen: boolean; onInvite: (w: Nearby) => void;
+}) {
+  const [show, setShow] = useState(startOpen);
+  const [list, setList] = useState<Nearby[] | null>(null);
+  const [err, setErr] = useState("");
+
+  useEffect(() => {
+    if (!show || list) return;
+    fetch(`/api/search?category=${post.category}&areaId=${post.area_id}`)
+      .then(async (r) => {
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error);
+        setList(d.workers);
+      })
+      .catch((e) => setErr(e.message || "Load nahi hua"));
+  }, [show, list, post.category, post.area_id]);
+
+  const already = new Set(post.applicants.map((a) => a.worker_id));
+  const rest = (list ?? []).filter((w) => !already.has(w.id)).slice(0, 5);
+
+  if (!show) {
+    return (
+      <button onClick={() => setShow(true)} className={`${btn} mt-3 w-full border border-line text-fg-2`}>
+        Paas ke {catInfo(post.category).label} dekho aur bulao
+      </button>
+    );
+  }
+  return (
+    <div className="mt-3 rounded-xl border border-line bg-bg p-3">
+      <p className="font-bold">Paas ke {catInfo(post.category).label} ({post.area} se)</p>
+      <p className="text-xs text-muted">Inko bulaoge to inhe ye kaam dikhega. Haan kahenge tab booking pakki.</p>
+      {err && <p className="mt-2 text-sm text-red-300">{err}</p>}
+      {!list && !err && <p className="mt-2 text-sm text-muted">Dhoondh rahe hain...</p>}
+      {list && rest.length === 0 && <p className="mt-2 text-sm text-muted">Aur koi kaarigar nahi mila. Jo haan kahenge wo upar dikhenge.</p>}
+      <ul className="mt-2 flex flex-col gap-2">
+        {rest.map((w) => (
+          <li key={w.id} className="flex items-center justify-between gap-2 rounded-lg border border-line p-2">
+            <div className="min-w-0">
+              <p className="font-bold">
+                {w.name}
+                {!w.available && <span className="ml-2 text-xs font-normal text-muted">abhi busy</span>}
+                {w.is_learner && <span className="ml-2 text-xs font-normal text-muted">Helper</span>}
+              </p>
+              <p className="text-xs text-fg-2">{ratingText(w.rating_avg, w.review_count)} · {distLabel(w.distance_km)}</p>
+            </div>
+            <button disabled={busy} onClick={() => onInvite(w)} className={`${btn} shrink-0 bg-brand text-bg`}>
+              Isko bulao
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function MyJobsPage() {
   const me = useMe();
   const [data, setData] = useState<Data | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [postedId, setPostedId] = useState(0);
+  const [tab, setTab] = useState<Tab | null>(null);
+  const [view, setView] = useState<View | null>(null);
   const acting = useRef(false); // ek action chal raha ho to doosra nahi
 
   const load = useCallback(async () => {
+    if (!view) return;
     try {
-      const res = await fetch("/api/jobs");
+      const res = await fetch(`/api/jobs?as=${view}`);
       const d = await res.json();
       if (!res.ok) throw new Error(d.error);
       setData(d);
     } catch (err) {
       setError((err as Error).message || "Load nahi hua. Internet check karo");
     }
-  }, []);
+  }, [view]);
 
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("posted")) {
-      setNotice("Kaam post ho gaya. Kaarigar haan kahenge to yahan dikhenge.");
+    const q = new URLSearchParams(window.location.search);
+    const v = q.get("view");
+    // Ek account dono: malik wala hissa ya kaarigar wala. Na bataya ho to abhi ke iraade se.
+    if (v === "customer" || v === "worker") setView(v);
+    else if (q.get("posted")) setView("customer");
+    const focusJob = Number(q.get("job"));
+    if (focusJob) { setView("customer"); setPostedId(focusJob); }
+    const posted = Number(q.get("posted"));
+    if (posted) {
+      setPostedId(posted);
+      setNotice("Kaam post ho gaya. Kaarigar haan kahenge to yahan dikhenge. Neeche paas ke kaarigar ko khud bhi bula sakte ho.");
     }
   }, []);
 
   useEffect(() => {
-    if (me) load();
-  }, [me, load]);
+    if (me && !view) setView(me.role === "customer" ? "customer" : "worker");
+  }, [me, view]);
+
+  useEffect(() => {
+    if (!me || !view) return;
+    load();
+    const on = () => { load(); };
+    window.addEventListener("kk:data-changed", on);
+    return () => window.removeEventListener("kk:data-changed", on);
+  }, [me, view, load]);
+
+  // Pehli baar: jahan kuch ho wahi hissa kholo
+  useEffect(() => {
+    if (!data || tab) return;
+    const tabs = data.role === "customer" ? data.posts.map(postTab) : data.jobs.map(workerTab);
+    if (postedId && data.role === "customer") {
+      const p = data.posts.find((x) => x.id === postedId);
+      if (p) { setTab(postTab(p)); return; }
+    }
+    const order = TABS[data.role].map((t) => t.id);
+    setTab(order.find((t) => tabs.includes(t)) ?? order[0]);
+  }, [data, tab, postedId]);
+
+  function switchView(v: View) {
+    if (v === view) return;
+    setData(null);
+    setTab(null);
+    setView(v);
+    window.history.replaceState(null, "", `/jobs?view=${v}`);
+  }
 
   async function act(jobId: number, body: object, okText: string, ask?: string) {
     if (acting.current) return;
@@ -117,11 +254,35 @@ export default function MyJobsPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-3 bg-bg p-4 pb-16 text-fg">
-      <TopBar title={me.role === "customer" ? "Meri bookings" : "Mere kaam"} />
+    <main className="mx-auto flex min-h-screen max-w-2xl flex-col gap-3 bg-bg p-4 pb-28 text-fg">
+      <TopBar title="Mera kaam" />
+      <div role="tablist" className="grid grid-cols-2 gap-1 rounded-2xl border border-line bg-surface p-1">
+        {(["customer", "worker"] as View[]).map((v) => (
+          <button key={v} role="tab" aria-selected={view === v} onClick={() => switchView(v)}
+            className={`rounded-xl py-3 text-sm font-extrabold transition sm:text-base ${view === v ? "bg-brand text-bg" : "text-fg-2 hover:bg-surface-2"}`}>
+            {v === "customer" ? "Meri bookings (malik)" : "Mere kaam (kaarigar)"}
+          </button>
+        ))}
+      </div>
       {notice && <p role="status" className="rounded-xl bg-ok/15 p-3 text-green-300">{notice}</p>}
       {error && <p role="alert" className="rounded-xl bg-danger/15 p-3 text-red-300">{error}</p>}
       {!data && !error && <p className="py-6 text-center text-lg text-muted">Load ho raha hai...</p>}
+
+      {data && (
+        <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1" role="tablist" aria-label="Haalat">
+          {TABS[data.role].map(({ id: t, label }) => {
+            const n = data.role === "customer"
+              ? data.posts.filter((p) => postTab(p) === t).length
+              : data.jobs.filter((j) => workerTab(j) === t).length;
+            return (
+              <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)}
+                className={`shrink-0 rounded-full border px-4 py-2 text-sm font-bold transition ${tab === t ? "border-brand bg-brand text-bg" : "border-line text-fg-2 hover:border-brand"}`}>
+                {label} <span className="opacity-80">({n})</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* ---------- Malik ki taraf ---------- */}
       {data?.role === "customer" && (
@@ -129,11 +290,11 @@ export default function MyJobsPage() {
           <Link href="/post" className="rounded-xl bg-brand p-3 text-center text-lg font-extrabold text-bg">
             + Naya kaam post karo
           </Link>
-          {data.posts.length === 0 && (
-            <p className="rounded-2xl border border-dashed border-line p-6 text-center text-muted">Abhi koi kaam post nahi kiya</p>
+          {tab && data.posts.filter((p) => postTab(p) === tab).length === 0 && (
+            <p className="rounded-2xl border border-dashed border-line p-6 text-center text-muted">{TABS.customer.find((x) => x.id === tab)?.empty}</p>
           )}
 
-          {data.posts.map((p) => {
+          {data.posts.filter((p) => postTab(p) === tab).map((p) => {
             const live = p.status === "open" || p.status === "assigned";
             const chosen = p.applicants.filter((a) => a.status === "selected");
             return (
@@ -144,6 +305,12 @@ export default function MyJobsPage() {
                 </div>
                 <p className="text-sm text-muted">{p.area}</p>
                 {p.note && <p className="mt-2 rounded-lg bg-bg p-2 text-fg-2">{p.note}</p>}
+                {p.status === "cancelled" && <p className="mt-2 font-semibold text-red-300">Aapne ye kaam cancel kiya</p>}
+                {p.withdrawn?.length > 0 && (
+                  <p className="mt-2 rounded-lg bg-warn/10 p-2 text-sm text-warn">
+                    {p.withdrawn.join(", ")} ne mana / cancel kar diya{p.status === "open" ? ". Kaam phir khula hai, doosra kaarigar chun sakte ho." : "."}
+                  </p>
+                )}
 
                 {p.status === "open" && p.applicants.length === 0 && (
                   <p className="mt-3 rounded-xl bg-bg p-3 text-fg-2">Abhi kisi kaarigar ne haan nahi kaha. Jaise hi koi haan kahega, yahan dikhega.</p>
@@ -169,7 +336,7 @@ export default function MyJobsPage() {
                         <p key={i} className="text-sm italic text-muted">“{c}”</p>
                       ))}
 
-                      {a.status === "invited" && live && <p className="mt-2 text-sm text-fg-2">Bulaya gaya hai. Kaarigar ke jawab ka intezaar.</p>}
+                      {a.status === "invited" && live && <p className="mt-2 rounded-lg bg-brand-soft p-2 text-sm text-fg-2">Invitation bheja gaya. Kaarigar ke jawab ka intezaar.</p>}
 
                       {a.status === "applied" && live && (
                         <button disabled={busy} onClick={() => act(p.id, { action: "select", workerId: a.worker_id }, `${a.name} ko chun liya. Ab number dikh raha hai.`)}
@@ -217,6 +384,11 @@ export default function MyJobsPage() {
                   ))}
                 </ul>
 
+                {p.status === "open" && (
+                  <NearbyWorkers post={p} busy={busy} startOpen={p.id === postedId}
+                    onInvite={(w) => act(p.id, { action: "invite", workerId: w.id }, `${w.name} ko bula liya. Wo haan kahenge to booking pakki.`)} />
+                )}
+
                 {p.status === "assigned" && chosen.length > 0 && (
                   <SafetyBar summary={`${catInfo(p.category).label}, ${dayLabel(p.work_date)} ${timeLabel(p.start_time)}, ${p.area}. Kaarigar: ${chosen.map((c) => c.name).join(", ")}`} />
                 )}
@@ -245,14 +417,14 @@ export default function MyJobsPage() {
       {/* ---------- Kaarigar ki taraf ---------- */}
       {data?.role === "worker" && (
         <>
-          <Link href="/open" className="rounded-xl bg-brand p-3 text-center text-lg font-extrabold text-bg">
+          <Link href="/explore?tab=jobs" className="rounded-xl bg-brand p-3 text-center text-lg font-extrabold text-bg">
             Naye kaam dekho
           </Link>
-          {data.jobs.length === 0 && (
-            <p className="rounded-2xl border border-dashed border-line p-6 text-center text-muted">Abhi koi kaam nahi. Naye kaam dekho.</p>
+          {tab && data.jobs.filter((j) => workerTab(j) === tab).length === 0 && (
+            <p className="rounded-2xl border border-dashed border-line p-6 text-center text-muted">{TABS.worker.find((x) => x.id === tab)?.empty}</p>
           )}
 
-          {data.jobs.map((j) => {
+          {data.jobs.filter((j) => workerTab(j) === tab).map((j) => {
             const live = j.job_status === "open" || j.job_status === "assigned";
             return (
               <section key={j.id} className={`rounded-2xl border border-line bg-surface p-4 ${live && j.my_status !== "withdrawn" ? "" : "opacity-80"}`}>
@@ -261,14 +433,16 @@ export default function MyJobsPage() {
                   <Pill status={j.job_status} />
                 </div>
                 <p className="text-sm text-muted">{j.customer_name} · {j.area}, {j.city} · {distLabel(j.distance_km)}</p>
+                <Link href={`/kaam/${j.id}`} className="mt-1 inline-block text-sm font-bold text-brand underline">Poori jaankari</Link>
                 {j.note && <p className="mt-2 rounded-lg bg-bg p-2 text-fg-2">{j.note}</p>}
 
                 {j.my_status === "invited" && live && (
                   <div className="mt-3">
                     <p className="font-semibold">Malik ne aapko seedha bulaya hai</p>
+                    <p className="text-sm text-muted">Haan kahoge to malik ko pata chalega. Malik chunega tab booking pakki hogi aur number dikhega.</p>
                     <div className="mt-2 grid grid-cols-2 gap-2">
                       <button disabled={busy} className={`${btn} bg-brand text-bg`}
-                        onClick={() => act(j.id, { action: "accept_invite" }, "Aapne haan kaha. Malik ka number dikh raha hai.")}>Aaunga</button>
+                        onClick={() => act(j.id, { action: "accept_invite" }, "Aapne haan kaha. Malik chunega to number dikhega.")}>Haan, aaunga</button>
                       <button disabled={busy} className={`${btn} border border-line`}
                         onClick={() => act(j.id, { action: "withdraw" }, "Aapne mana kar diya", "Is kaam ke liye mana karna hai?")}>Mana</button>
                     </div>
@@ -277,7 +451,7 @@ export default function MyJobsPage() {
 
                 {j.my_status === "applied" && live && (
                   <div className="mt-3">
-                    <p className="rounded-xl bg-bg p-3 text-fg-2">Aapne haan kaha. Malik ke jawab ka intezaar.</p>
+                    <p className="rounded-xl bg-bg p-3 text-fg-2"><b className="text-fg">Request bhej di gayi.</b> Malik chunega to yahan number dikhega.</p>
                     <button disabled={busy} className={`${btn} mt-2 w-full border border-line`}
                       onClick={() => act(j.id, { action: "withdraw" }, "Aapne apna haan wapas liya", "Apna haan wapas lena hai?")}>Wapas lo</button>
                   </div>

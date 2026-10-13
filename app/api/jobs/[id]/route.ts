@@ -1,5 +1,16 @@
 import { getCurrentUser } from "@/lib/session";
-import { jobAction } from "@/lib/jobs";
+import { getJobForWorker, jobAction } from "@/lib/jobs";
+
+// GET /api/jobs/12 -> ek kaam ki jaankari (kaarigar ke liye). Number/pata tabhi jab haq ho.
+export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+  const me = await getCurrentUser();
+  if (!me) return Response.json({ error: "Pehle login karo" }, { status: 401 });
+  const jobId = Number((await params).id);
+  if (!Number.isInteger(jobId) || jobId <= 0) return Response.json({ error: "Galat kaam" }, { status: 400 });
+  const job = await getJobForWorker(me, jobId);
+  if (!job) return Response.json({ error: "Ye kaam nahi mila, ya ab khula nahi hai" }, { status: 404 });
+  return Response.json({ job });
+}
 
 // POST /api/jobs/12  { action: "apply" | "accept_invite" | "withdraw" | "select" | "unselect" | "cancel" | "complete" | "review", ... }
 export async function POST(req: Request, { params }: { params: Promise<{ id: string }> }) {
