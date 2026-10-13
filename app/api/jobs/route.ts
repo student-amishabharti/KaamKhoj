@@ -25,7 +25,7 @@ export async function POST(req: Request) {
   }
   const body = await req.json().catch(() => ({}));
   try {
-    const id = await createJob(me, {
+    const { id, duplicate } = await createJob(me, {
       category: String(body.category ?? ""),
       workDate: String(body.workDate ?? ""),
       startTime: String(body.startTime ?? ""),
@@ -33,7 +33,7 @@ export async function POST(req: Request) {
       note: typeof body.note === "string" ? body.note : "",
       inviteWorkerId: body.inviteWorkerId ? Number(body.inviteWorkerId) : undefined,
     });
-    return Response.json({ ok: true, id });
+    return Response.json({ ok: true, id, duplicate });
   } catch (err) {
     return Response.json({ error: (err as Error).message }, { status: 400 });
   }

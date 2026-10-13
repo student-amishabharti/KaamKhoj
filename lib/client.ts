@@ -5,6 +5,7 @@ import { useEffect, useState } from "react";
 export type Me = {
   id: number;
   name: string;
+  phone: string;
   role: "worker" | "customer" | "business";
   area_id: number | null;
   area_name: string | null;

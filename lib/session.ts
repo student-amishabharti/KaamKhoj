@@ -3,9 +3,11 @@ import { cookies } from "next/headers";
 import { pool } from "@/lib/db";
 
 export const COOKIE = "kk_session";
-const SECRET = process.env.SESSION_SECRET ?? "dev-secret";
+// Live website par SESSION_SECRET zaroori hai; laptop par na ho to sirf demo ke liye ek line
+const SECRET = process.env.SESSION_SECRET || (process.env.NODE_ENV === "production" ? "" : "dev-only-secret");
 
 function sign(value: string) {
+  if (!SECRET) throw new Error("SESSION_SECRET set nahi hai (Render > Environment mein jodo)");
   return createHmac("sha256", SECRET).update(value).digest("hex");
 }
 
@@ -27,6 +29,7 @@ function readToken(token?: string): number | null {
 export type CurrentUser = {
   id: number;
   name: string;
+  phone: string;
   role: "worker" | "customer" | "business";
   area_id: number | null;
   area_name: string | null;
@@ -37,7 +40,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   const id = readToken(store.get(COOKIE)?.value);
   if (!id) return null;
   const { rows } = await pool.query(
-    `SELECT u.id, u.name, u.role, u.area_id, a.name AS area_name
+    `SELECT u.id, u.name, u.phone, u.role, u.area_id, a.name AS area_name
      FROM users u LEFT JOIN areas a ON a.id = u.area_id
      WHERE u.id = $1`,
     [id]

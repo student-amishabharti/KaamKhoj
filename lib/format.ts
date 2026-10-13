@@ -34,8 +34,21 @@ export function timeLabel(t: string) {
 }
 
 export const JOB_STATUS: Record<string, { text: string; cls: string }> = {
-  open: { text: "🟡 Khula", cls: "bg-yellow-100 text-yellow-800" },
-  assigned: { text: "🟢 Kaarigar tay", cls: "bg-green-100 text-green-800" },
-  completed: { text: "✔️ Poora", cls: "bg-gray-200 text-gray-700" },
-  cancelled: { text: "❌ Cancel", cls: "bg-red-100 text-red-700" },
+  open: { text: "Kaam khula hai", cls: "bg-yellow-100 text-yellow-800" },
+  assigned: { text: "Kaarigar mil gaya", cls: "bg-green-100 text-green-800" },
+  completed: { text: "Kaam poora hua", cls: "bg-gray-200 text-gray-700" },
+  cancelled: { text: "Cancel ho gaya", cls: "bg-red-100 text-red-700" },
 };
+
+// Doori: same area = 0 km dikhana galat lagta hai, isliye saaf shabd
+export function distLabel(km: number | null | undefined) {
+  if (km === null || km === undefined || Number.isNaN(km)) return "Doori pata nahi";
+  if (km < 0.5) return "Aapke area mein";
+  return `${km.toFixed(1)} km door`;
+}
+
+// Rating: bina review wale ko 0 ya 5 nahi, "Naya kaarigar" dikhao
+export function ratingText(avg: number, count: number) {
+  if (!count) return "Naya kaarigar · abhi review nahi";
+  return `★ ${Number(avg).toFixed(1)} (${count} review${count === 1 ? "" : "s"})`;
+}

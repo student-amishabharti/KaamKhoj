@@ -28,15 +28,20 @@ export function checkJobInput(i: Partial<JobInput>): string | null {
   return null;
 }
 
-export async function createJob(me: CurrentUser, i: JobInput) {
+export async function createJob(me: CurrentUser, i: JobInput): Promise<{ id: number; duplicate: boolean }> {
   const err = checkJobInput(i);
   if (err) throw new Error(err);
   if (!me.area_id) throw new Error("Pehle apna area chuno");
 
-  const past = await pool.query("SELECT $1::date < current_date AS past", [i.workDate]);
-  if (past.rows[0].past) throw new Error("Beeta hua din nahi chun sakte");
+  // Din aur time dono India ke samay se check (server UTC mein chalta hai)
+  const past = await pool.query(
+    "SELECT ($1::date + $2::time) < (now() AT TIME ZONE 'Asia/Kolkata') AS past",
+    [i.workDate, i.startTime]
+  );
+  if (past.rows[0].past) throw new Error("Ye samay beet chuka hai. Aage ka din ya time chuno");
 
   if (i.inviteWorkerId) {
+    if (i.inviteWorkerId === me.id) throw new Error("Apne aap ko nahi bula sakte");
     const ok = await pool.query(
       "SELECT 1 FROM worker_profiles WHERE user_id = $1 AND $2 = ANY(skills)",
       [i.inviteWorkerId, i.category]
@@ -44,20 +49,40 @@ export async function createJob(me: CurrentUser, i: JobInput) {
     if (ok.rowCount === 0) throw new Error("Ye kaarigar is kaam ka nahi hai");
   }
 
-  const { rows } = await pool.query(
-    `INSERT INTO job_posts (customer_id, category, area_id, work_date, start_time, hours, note)
-     VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-    [me.id, i.category, me.area_id, i.workDate, i.startTime, Number(i.hours), (i.note ?? "").slice(0, 200) || null]
+  const note = (i.note ?? "").trim().slice(0, 200) || null;
+
+  // Double-click / dobara bhejne se wahi kaam do baar na bane:
+  // 2 minute ke andar bilkul same kaam pehle se hai to wahi lauta do.
+  const same = await pool.query(
+    `SELECT id FROM job_posts
+     WHERE customer_id = $1 AND category = $2 AND work_date = $3 AND start_time = $4 AND hours = $5
+       AND COALESCE(note, '') = COALESCE($6, '') AND status IN ('open', 'assigned')
+       AND created_at > now() - interval '2 minutes'
+     ORDER BY id DESC LIMIT 1`,
+    [me.id, i.category, i.workDate, i.startTime, Number(i.hours), note]
   );
-  const jobId: number = rows[0].id;
+
+  let jobId: number;
+  let duplicate = false;
+  if (same.rows[0]) {
+    jobId = same.rows[0].id;
+    duplicate = true;
+  } else {
+    const { rows } = await pool.query(
+      `INSERT INTO job_posts (customer_id, category, area_id, work_date, start_time, hours, note)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+      [me.id, i.category, me.area_id, i.workDate, i.startTime, Number(i.hours), note]
+    );
+    jobId = rows[0].id;
+  }
 
   if (i.inviteWorkerId) {
     await pool.query(
-      "INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'invited')",
+      "INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'invited') ON CONFLICT DO NOTHING",
       [jobId, i.inviteWorkerId]
     );
   }
-  return jobId;
+  return { id: jobId, duplicate };
 }
 
 // Kaarigar ke liye: uski skill wale khule kaam, paas wale pehle
@@ -77,6 +102,7 @@ export async function listOpenJobs(workerId: number) {
      JOIN worker_profiles w ON w.user_id = $1
      LEFT JOIN job_applications ja ON ja.job_id = j.id AND ja.worker_id = $1
      WHERE j.status = 'open'
+       AND j.customer_id <> $1
        AND j.category = ANY(w.skills)
        AND j.work_date >= current_date
        AND NOT EXISTS (SELECT 1 FROM blocks b
@@ -184,12 +210,21 @@ export async function jobAction(me: CurrentUser, jobId: number, a: JobAction) {
   // ----- Kaarigar ke kaam -----
   if (me.role !== "customer") {
     if (a.action === "apply") {
+      if (job.customer_id === me.id) throw new Error("Apne hi kaam par haan nahi keh sakte");
       if (job.status !== "open") throw new Error("Ye kaam ab khula nahi hai");
       const skill = await pool.query(
         "SELECT 1 FROM worker_profiles WHERE user_id = $1 AND $2 = ANY(skills)",
         [me.id, job.category]
       );
       if (skill.rowCount === 0) throw new Error("Ye kaam aapki skill ka nahi hai");
+
+      const prev = (
+        await pool.query("SELECT status FROM job_applications WHERE job_id = $1 AND worker_id = $2", [jobId, me.id])
+      ).rows[0];
+      if (prev?.status === "applied") throw new Error("Aap pehle hi haan keh chuke ho");
+      if (prev?.status === "selected" || prev?.status === "invited") throw new Error("Ye kaam 'Mere kaam' mein hai");
+      if (prev?.status === "rejected") throw new Error("Malik ne is kaam ke liye kisi aur ko chuna");
+
       await pool.query(
         `INSERT INTO job_applications (job_id, worker_id, status) VALUES ($1, $2, 'applied')
          ON CONFLICT (job_id, worker_id) DO UPDATE SET status = 'applied'
